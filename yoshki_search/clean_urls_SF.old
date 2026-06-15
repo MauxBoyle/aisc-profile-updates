@@ -1,0 +1,118 @@
+import csv
+import re
+
+# --- CONFIGURATION ---
+INPUT_FILE = 'maybe_urls.csv'
+ID_COLUMN = 'Id'   # Change this if your ID column has a different header
+URL_COLUMN = 'Website' # Change this if your URL column has a different header
+
+# Output File Names
+OUTPUT_1_CLEAN_UNIQUE = 'url_list.csv'
+OUTPUT_2_CLEAN_MAPPED = 'mapped_urls.csv'
+OUTPUT_3_BAD_RECORDS   = 'bad_urls.csv'
+
+# Note for the bad records file
+TODAYS_NOTE = 'Bad URL removed 6/2/26'
+
+# Case-insensitive RegEx pattern for validation
+# URL_PATTERN = re.compile(r'^(https?://)?([\da-z-]+(?:\.[\da-z-]+)*)\.([a-z]{2,6})([\/\w \.-]*)*/?$', re.IGNORECASE)
+# A linear, non-nesting RegEx that cannot suffer from catastrophic backtracking
+URL_PATTERN = re.compile(r'^(https?://)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)(/[^\s]*)?$', re.IGNORECASE)
+
+def clean_and_strip_protocol(raw_url):
+    """Checks if valid. If so, returns (clean_url_with_https, domain_only_without_http)."""
+    raw_url = raw_url.strip()
+    if URL_PATTERN.match(raw_url):
+        # 1. Create the fully qualified URL with https://
+        if not raw_url.startswith(('http://', 'https://')):
+            full_url = 'https://' + raw_url
+        else:
+            full_url = raw_url
+        
+        # 2. Create the stripped version (remove http:// or https://)
+        stripped_url = re.sub(r'^https?://', '', full_url, flags=re.IGNORECASE)
+        
+        return full_url, stripped_url
+    return None, None
+
+def main():
+    # Containers for our three target outputs
+    unique_clean_urls = set()  # Using a 'set' automatically prevents duplicates
+    mapped_records = []        # Will hold dictionaries of {id, stripped_url}
+    bad_records = []           # Will hold dictionaries of {id, url, Blank, Note}
+
+    print(f" Reading {INPUT_FILE}...")
+    
+    try:
+        with open(INPUT_FILE, mode='r', encoding='utf-8') as infile:
+            reader = csv.DictReader(infile)
+            
+            for row in reader:
+                account_id = row.get(ID_COLUMN, '').strip()
+                raw_url = row.get(URL_COLUMN, '').strip()
+                
+                # Skip entirely blank rows
+                if not account_id and not raw_url:
+                    continue
+                
+                full_url, stripped_url = clean_and_strip_protocol(raw_url)
+                
+                if full_url:
+                    # File 1 logic: Add to unique set
+                    unique_clean_urls.add(full_url)
+                    
+                    # File 2 logic: Map stripped URL to ID (allows duplicates)
+                    mapped_records.append({
+                        ID_COLUMN: account_id,
+                        'stripped_url': stripped_url
+                    })
+                else:
+                    # File 3 logic: Collect bad records with requested metadata
+                    bad_records.append({
+                        ID_COLUMN: account_id,
+                        URL_COLUMN: raw_url,
+                        'Blank': '',
+                        'Note': TODAYS_NOTE
+                    })
+                    
+    except FileNotFoundError:
+        print(f"Error: Could not find '{INPUT_FILE}'. Place it in the same directory as this script.")
+        return
+
+    # -------------------------------------------------------------
+    # OUTPUT 1: Unique list of clean URLs for the scraper script
+    # -------------------------------------------------------------
+    print(f"💾 Saving unique scraping list to: {OUTPUT_1_CLEAN_UNIQUE}")
+    with open(OUTPUT_1_CLEAN_UNIQUE, mode='w', encoding='utf-8', newline='') as out1:
+        writer = csv.writer(out1)
+        writer.writerow(['url'])  # Header
+        for url in sorted(unique_clean_urls): # sorted() is optional, but keeps it tidy
+            writer.writerow([url])
+
+    # -------------------------------------------------------------
+    # OUTPUT 2: Account IDs matched with stripped URLs (with duplicates)
+    # -------------------------------------------------------------
+    print(f"💾 Saving mapped account URLs to: {OUTPUT_2_CLEAN_MAPPED}")
+    with open(OUTPUT_2_CLEAN_MAPPED, mode='w', encoding='utf-8', newline='') as out2:
+        fieldnames = [ID_COLUMN, 'stripped_url']
+        writer = csv.DictWriter(out2, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(mapped_records)
+
+    # -------------------------------------------------------------
+    # OUTPUT 3: Bad records documentation file
+    # -------------------------------------------------------------
+    print(f"💾 Saving bad records log to: {OUTPUT_3_BAD_RECORDS}")
+    with open(OUTPUT_3_BAD_RECORDS, mode='w', encoding='utf-8', newline='') as out3:
+        fieldnames = [ID_COLUMN, URL_COLUMN, 'Blank', 'Note']
+        writer = csv.DictWriter(out3, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(bad_records)
+
+    print("\nProcessing complete! Summary of results:")
+    print(f"-> Total Unique Valid URLs: {len(unique_clean_urls)}")
+    print(f"-> Total Mapped Accounts: {len(mapped_records)}")
+    print(f"-> Total Bad Records Flags: {len(bad_records)}")
+
+if __name__ == "__main__":
+    main()

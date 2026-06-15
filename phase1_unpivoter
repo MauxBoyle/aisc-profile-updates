@@ -1,0 +1,74 @@
+import pandas as pd
+import os
+from dotenv import load_dotenv
+from simple_salesforce import Salesforce
+
+load_dotenv()
+
+# --- 1. SOQL PULL ---
+def pull_submissions(sf):
+    query = """
+    SELECT Id, Account__c, Certification_ID__c, Type__c, Email__c, Name__c, Status__c,
+           Cert_Email__c, Cert_First_Name__c, Cert_Last_Name__c, Cert_Phone__c, Cert_Title__c,
+           Principal_Email__c, Principal_First_Name__c, Principal_Last_Name__c, Principal_Phone__c, Principal_Title__c,
+           Quality_Email__c, Quality_First_Name__c, Quality_Last_Name__c, Quality_Phone__c, QC_Title__c,
+           NY_Email__c, NY_First_Name__c, NY_Last_Name__c, NY_Phone__c,
+           Revised_Company_Name__c, Revised_Facility_City__c, Effective_Date__c
+    FROM Company_Profile_Change__c 
+    WHERE Status__c = 'Pending' 
+    """
+    results = sf.query_all(query)
+    return pd.DataFrame(results['records']).drop(columns='attributes', errors='ignore')
+
+# --- 2. THE HUMAN-IN-THE-LOOP CLEANER ---
+def process_role(role_prefix, row):
+    """Extracts and cleans data for a specific role (e.g., 'Cert', 'Principal')"""
+    email = row.get(f'{role_prefix}_Email__c')
+    if not email: return None # Skip if this role wasn't filled out
+    
+    first = str(row.get(f'{role_prefix}_First_Name__c', '')).strip()
+    last = str(row.get(f'{role_prefix}_Last_Name__c', '')).strip()
+    
+    # LOGIC: First Last Last error
+    if first.endswith(last) and last != "":
+        print(f"\n⚠️  Potential 'First Last Last' error: [{first}] / [{last}]")
+        action = input(f"Remove '{last}' from First Name? (y/n/skip): ")
+        if action.lower() == 'y':
+            first = first.replace(last, "").strip()
+
+    # LOGIC: Asian Name Precedence
+    if first == "" and " " in last:
+        print(f"\n🚨 Exception: Blank First Name but space in Last Name: [{last}]")
+        new_f = input("Enter First Name: ")
+        new_l = input("Enter Last Name (or Enter to keep original): ")
+        first = new_f if new_f else first
+        last = new_l if new_l else last
+
+    return {
+        'Role': role_prefix,
+        'First': first,
+        'Last': last,
+        'Email': email,
+        'Phone': row.get(f'{role_prefix}_Phone__c'),
+        'Title': row.get(f'{role_prefix}_Title__c') if role_prefix != 'NY' else 'NY Contact'
+    }
+
+# --- 3. EXECUTION LOGIC ---
+sf = Salesforce(username=os.getenv('SF_USERNAME'), password=os.getenv('SF_PASSWORD'), security_token=os.getenv('SF_TOKEN'))
+df_raw = pull_submissions(sf)
+
+all_contact_updates = []
+
+for idx, row in df_raw.iterrows():
+    print(f"\nProcessing Submission from {row['Name__c']} for Account {row['Account__c']}")
+    
+    # Check each role
+    for role in ['Cert', 'Principal', 'AP', 'Quality', 'NY']:
+        update = process_role(role, row)
+        if update:
+            update['Submission_ID'] = row['Id']
+            update['Account_ID'] = row['Account__c']
+            all_contact_updates.append(update)
+
+df_final_updates = pd.DataFrame(all_contact_updates)
+print("\n✅ Phase 1 Complete. Individual updates ready for Phase 2 Validation.")
